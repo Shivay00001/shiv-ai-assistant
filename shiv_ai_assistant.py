@@ -729,4 +729,4 @@ if __name__ == "__main__":
         print("🧠 No LLM Dependency | 💪 Expert-Level Automation")
         print("="*65 + "\n")
         
-        self.speak("
+        self.speak("Welcome to Shiv AI. I am ready to assist you.")
