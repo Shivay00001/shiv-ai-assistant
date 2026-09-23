@@ -1,28 +1,53 @@
-import pyautogui
-import speech_recognition as sr
-import pyttsx3
+import argparse
+import sys
 import webbrowser
 import os
 import time
 import subprocess
-import psutil
 import json
 import requests
 from datetime import datetime, timedelta
 import threading
-import keyboard
-import pyperclip
-import cv2
-import numpy as np
-from PIL import ImageGrab, Image
 import random
 import shutil
-import winshell
 from pathlib import Path
 import sqlite3
 import re
 from collections import defaultdict
 import hashlib
+
+# ---------------------------------------------------------------------------
+# Optional third-party dependencies.
+# The core assistant (command parsing, REPL, demo mode) needs only the
+# standard library. Desktop/audio/phone features degrade gracefully when
+# their packages are not installed instead of crashing at import time.
+# ---------------------------------------------------------------------------
+
+def _try_import(name):
+    """Import *name*, returning (module, True) or (None, False)."""
+    try:
+        return __import__(name), True
+    except Exception:
+        return None, False
+
+
+pyautogui, _HAS_PYAUTOGUI = _try_import("pyautogui")
+sr, _HAS_SPEECH = _try_import("speech_recognition")
+pyttsx3, _HAS_TTS = _try_import("pyttsx3")
+keyboard, _HAS_KEYBOARD = _try_import("keyboard")
+pyperclip, _HAS_PYPERCLIP = _try_import("pyperclip")
+cv2, _HAS_CV2 = _try_import("cv2")
+np, _HAS_NUMPY = _try_import("numpy")
+winshell, _HAS_WINSHELL = _try_import("winshell")
+psutil, _HAS_PSUTIL = _try_import("psutil")
+
+try:
+    from PIL import ImageGrab, Image
+    _HAS_PIL = True
+except Exception:
+    ImageGrab = None
+    Image = None
+    _HAS_PIL = False
 
 class ShivAI_AGI:
     """
@@ -38,36 +63,52 @@ class ShivAI_AGI:
     - Android Device Control via ADB
     """
     
-    def __init__(self):
+    def __init__(self, demo=False, voice=True):
         print("🔷 Initializing ShivAI AGI System...")
-        
-        # Core Engines
-        self.engine = pyttsx3.init()
-        self.engine.setProperty('rate', 160)
-        self.engine.setProperty('volume', 1.0)
-        self.recognizer = sr.Recognizer()
-        
+
+        # Mode flags. Demo mode can also be forced via the SHIVAI_DEMO env var.
+        # In demo mode mic/GUI/phone actions are simulated -- nothing is
+        # executed, so the assistant runs safely anywhere, dependency-free.
+        self.demo = bool(demo) or os.environ.get("SHIVAI_DEMO", "").strip().lower() in ("1", "true", "yes")
+        self.use_voice = False  # enabled by main() only with --voice + installed deps
+
+        # Core Engines (optional -- degrade to text-only when unavailable)
+        self.engine = None
+        if voice and _HAS_TTS and not self.demo:
+            try:
+                self.engine = pyttsx3.init()
+                self.engine.setProperty('rate', 160)
+                self.engine.setProperty('volume', 1.0)
+            except Exception as e:
+                print(f"⚠️  TTS unavailable ({e}); using text output.")
+                self.engine = None
+        self.recognizer = sr.Recognizer() if _HAS_SPEECH else None
+
         # AI State Management
         self.is_active = True
         self.context_memory = {}
         self.task_history = []
         self.workflow_queue = []
         self.learned_patterns = {}
-        
+
         # Knowledge Base (Offline)
         self.init_knowledge_base()
-        
-        # Android Control Setup
-        self.adb_connected = self.check_adb_connection()
-        
+
+        # Android Control Setup (skipped in demo mode)
+        self.adb_connected = False if self.demo else self.check_adb_connection()
+
         # Task Counter
         self.total_tasks = 0
         self.expert_tasks = 0
-        
+
         # Configuration
-        pyautogui.FAILSAFE = True
-        pyautogui.PAUSE = 0.3
-        
+        if _HAS_PYAUTOGUI:
+            pyautogui.FAILSAFE = True
+            pyautogui.PAUSE = 0.3
+
+        if self.demo:
+            print("🧪 DEMO MODE: mic/GUI/phone actions will be simulated, no side effects.")
+
         print("✅ ShivAI AGI Initialized Successfully!")
     
     def init_knowledge_base(self):
@@ -265,17 +306,24 @@ if __name__ == "__main__":
         }
     
     def speak(self, text, fast=False):
-        """Enhanced bilingual speech output"""
-        if fast:
-            self.engine.setProperty('rate', 200)
+        """Enhanced bilingual speech output (text-only when TTS is unavailable)"""
         print(f"🤖 ShivAI: {text}")
-        self.engine.say(text)
-        self.engine.runAndWait()
-        if fast:
-            self.engine.setProperty('rate', 160)
-    
+        if self.engine is None:
+            return
+        try:
+            if fast:
+                self.engine.setProperty('rate', 200)
+            self.engine.say(text)
+            self.engine.runAndWait()
+            if fast:
+                self.engine.setProperty('rate', 160)
+        except Exception:
+            pass
+
     def listen(self, timeout=5):
-        """Enhanced voice recognition with context"""
+        """Enhanced voice recognition with context; falls back to typed input"""
+        if self.recognizer is None:
+            return input("⌨️  Mic unavailable — type your command: ").strip().lower()
         with sr.Microphone() as source:
             print("🎤 Suniye...")
             self.recognizer.adjust_for_ambient_noise(source, duration=0.2)
@@ -290,7 +338,7 @@ if __name__ == "__main__":
                     'status': 'processing'
                 })
                 return command.lower()
-            except:
+            except Exception:
                 return ""
     
     # ========== ANDROID CONTROL VIA ADB ==========
@@ -430,9 +478,15 @@ if __name__ == "__main__":
         
         self.speak(f"{app_type} app ban gaya. Folder: {app_name}")
         self.expert_tasks += 1
-        
-        # Auto-open folder
-        subprocess.Popen(f'explorer "{os.path.abspath(app_name)}"')
+
+        # Auto-open folder (Windows only; print the path elsewhere)
+        try:
+            if os.name == 'nt':
+                subprocess.Popen(f'explorer "{os.path.abspath(app_name)}"')
+            else:
+                print(f"📁 App folder: {os.path.abspath(app_name)}")
+        except Exception as e:
+            print(f"⚠️  Could not open folder automatically: {e}")
     
     # ========== WORKFLOW AUTOMATION ==========
     def execute_workflow(self, workflow_name):
@@ -440,7 +494,12 @@ if __name__ == "__main__":
         if workflow_name not in self.knowledge_base['workflow_templates']:
             self.speak("Workflow template nahi mila")
             return
-        
+
+        if not _HAS_PYAUTOGUI:
+            print("⚠️  Workflow execution needs 'pyautogui' (pip install pyautogui).")
+            self.speak("Workflow ke liye pyautogui install karein")
+            return
+
         workflow = self.knowledge_base['workflow_templates'][workflow_name]
         self.speak(f"{workflow_name} workflow shuru kar raha hoon")
         
@@ -554,6 +613,10 @@ if __name__ == "__main__":
                 self.expert_tasks += 1
             
             elif 'analyze system performance' in cmd:
+                if not _HAS_PSUTIL:
+                    print("⚠️  System analysis needs 'psutil' (pip install psutil).")
+                    self.speak("System analysis ke liye psutil install karein")
+                    return
                 report = {
                     'CPU': psutil.cpu_percent(interval=1),
                     'Memory': psutil.virtual_memory().percent,
@@ -572,6 +635,20 @@ if __name__ == "__main__":
         except Exception as e:
             self.speak(f"Expert task error: {str(e)[:50]}")
     
+    # ========== DEMO / SAFETY WRAPPER ==========
+    def _run_action(self, cmd, handler, label):
+        """Dispatch an action handler, or simulate it in demo mode.
+
+        In demo mode nothing touches the mic, screen, phone, or filesystem --
+        the action is logged as simulated and counted as a task instead.
+        """
+        if self.demo:
+            print(f"🧪 demo mode: '{label}' simulated for: {cmd!r} (no real action taken)")
+            self.total_tasks += 1
+            return
+        if handler is not None:
+            handler(cmd)
+
     # ========== MASTER COMMAND PROCESSOR ==========
     def process_command(self, cmd):
         """Master command processing with context awareness"""
@@ -590,44 +667,53 @@ if __name__ == "__main__":
         elif 'stats' in cmd or 'statistics' in cmd:
             self.speak(f"Total tasks: {self.total_tasks}, Expert tasks: {self.expert_tasks}")
             print(f"📊 Task History: {len(self.task_history)} commands")
-        
+
+        # Clock -- harmless everywhere, works even in demo mode
+        elif 'time' in cmd or 'clock' in cmd or 'samay' in cmd:
+            self.basic_pc_control('time')
+
         # Android Control
         elif 'phone' in cmd or 'android' in cmd or 'mobile' in cmd:
-            self.android_control(cmd)
-        
+            self._run_action(cmd, self.android_control, "Android control")
+
         # App Builder
         elif 'build' in cmd or 'create app' in cmd or 'generate app' in cmd:
-            self.app_builder(cmd)
-        
+            self._run_action(cmd, self.app_builder, "App builder")
+
         # Workflow Execution
         elif 'workflow' in cmd:
             if 'morning' in cmd:
-                self.execute_workflow('morning_routine')
+                self._run_action(cmd, lambda c: self.execute_workflow('morning_routine'), "Morning workflow")
             elif 'backup' in cmd:
-                self.execute_workflow('backup_workflow')
+                self._run_action(cmd, lambda c: self.execute_workflow('backup_workflow'), "Backup workflow")
             elif 'productivity' in cmd:
-                self.execute_workflow('productivity_setup')
-        
+                self._run_action(cmd, lambda c: self.execute_workflow('productivity_setup'), "Productivity workflow")
+            else:
+                self.speak("Kaunsa workflow? 'morning', 'backup' ya 'productivity' boliye")
+
         # Learning
         elif 'learn pattern' in cmd:
-            self.speak("Pattern name boliye")
-            pattern_name = self.listen()
-            self.speak("Commands batao, separated by 'and'")
-            commands_str = self.listen()
-            commands = commands_str.split('and')
-            self.learn_pattern(pattern_name, commands)
-        
+            if self.demo:
+                self._run_action(cmd, None, "Learn pattern")
+            else:
+                self.speak("Pattern name boliye")
+                pattern_name = self.listen()
+                self.speak("Commands batao, separated by 'and'")
+                commands_str = self.listen()
+                commands = commands_str.split('and')
+                self.learn_pattern(pattern_name, commands)
+
         elif 'execute pattern' in cmd:
             pattern_name = cmd.replace('execute pattern', '').strip()
-            self.execute_learned_pattern(pattern_name)
-        
+            self._run_action(cmd, lambda c: self.execute_learned_pattern(pattern_name), "Execute learned pattern")
+
         # Expert Tasks
         elif any(word in cmd for word in ['project structure', 'bulk rename', 'create database', 'analyze performance']):
-            self.expert_automation(cmd)
-        
+            self._run_action(cmd, self.expert_automation, "Expert task")
+
         # Basic PC automation (from previous version)
         elif any(word in cmd for word in ['open', 'minimize', 'close', 'click', 'type', 'screenshot', 'volume']):
-            self.basic_pc_control(cmd)
+            self._run_action(cmd, self.basic_pc_control, "PC control")
         
         else:
             self.speak("Command samajh nahi aaya. Help boliye")
@@ -636,6 +722,15 @@ if __name__ == "__main__":
     
     def basic_pc_control(self, cmd):
         """Basic PC control commands"""
+        # 'time' needs no GUI automation -- answer it even without pyautogui.
+        if 'time' in cmd:
+            current_time = datetime.now().strftime("%I:%M %p")
+            self.speak(f"Samay hai {current_time}")
+            return
+        if not _HAS_PYAUTOGUI:
+            print("⚠️  'pyautogui' not installed -- GUI/window control unavailable (pip install pyautogui).")
+            self.speak("GUI control ke liye pyautogui install karein")
+            return
         if 'open notepad' in cmd:
             os.system('notepad.exe')
             self.speak("Notepad khol diya")
@@ -660,9 +755,6 @@ if __name__ == "__main__":
             for _ in range(5):
                 pyautogui.press('volumedown')
             self.speak("Volume down")
-        elif 'time' in cmd:
-            current_time = datetime.now().strftime("%I:%M %p")
-            self.speak(f"Samay hai {current_time}")
     
     def show_help(self):
         """Comprehensive help menu"""
@@ -719,14 +811,118 @@ if __name__ == "__main__":
         print(help_text)
         self.speak("Complete help screen par hai. Unique features available hain")
     
-    def run(self):
-        """Main execution loop"""
+    def run(self, commands=None):
+        """Main execution loop.
+
+        Two modes:
+          * commands=[...] -- run each command non-interactively, then exit.
+          * otherwise      -- interactive text REPL (Ctrl+C / 'exit' / 'quit'
+                              to stop). Voice input only with --voice and the
+                              speech_recognition package installed.
+
+        Every command is dispatched through process_command(); any exception
+        in a single command is caught so one bad command never kills the loop.
+        """
         print("\n" + "="*65)
         print("🔷 ShivAI - Autonomous General Intelligence (AGI)")
         print("="*65)
         print("✨ India's First Offline Expert Assistant")
         print("🎯 500+ Tasks | 📱 Phone Control | 🏗️ App Builder")
         print("🧠 No LLM Dependency | 💪 Expert-Level Automation")
+        if self.demo:
+            print("🧪 DEMO MODE -- offline, text-only; actions are simulated, nothing is executed.")
         print("="*65 + "\n")
-        
+
         self.speak("Welcome to Shiv AI. I am ready to assist you.")
+
+        if commands:
+            # Non-interactive batch mode (CLI -c/--command)
+            for raw in commands:
+                cmd = (raw or "").strip()
+                if not cmd:
+                    continue
+                print(f"\n👤 You: {cmd}")
+                try:
+                    if not self.process_command(cmd.lower()):
+                        break
+                except Exception as e:
+                    print(f"⚠️  Error while running {cmd!r}: {e}")
+            self._shutdown()
+            return
+
+        # Interactive REPL
+        print("💬 Type 'help' for commands, 'exit' to quit.\n")
+        while self.is_active:
+            try:
+                if self.use_voice and self.recognizer is not None:
+                    cmd = self.listen()
+                else:
+                    cmd = input("👤 You: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()  # clean line after ^C
+                break
+            if not cmd:
+                continue
+            try:
+                keep_going = self.process_command(cmd.lower())
+            except Exception as e:
+                print(f"⚠️  Command failed ({e}); continuing.")
+                continue
+            if not keep_going:
+                break
+        self._shutdown()
+
+    def _shutdown(self):
+        """Graceful shutdown with a session summary."""
+        self.is_active = False
+        print("\n" + "="*65)
+        print(f"👋 Session over -- {self.total_tasks} tasks, {self.expert_tasks} expert tasks. Dhanyavaad!")
+        print("="*65)
+
+
+def main(argv=None):
+    """CLI entry point.
+
+    Examples:
+        python shiv_ai_assistant.py                 # interactive REPL
+        python shiv_ai_assistant.py --demo          # demo mode (safe, offline)
+        python shiv_ai_assistant.py -c "help"       # single command, then exit
+        python shiv_ai_assistant.py --voice         # microphone input (if available)
+        SHIVAI_DEMO=1 python shiv_ai_assistant.py   # demo mode via env var
+    """
+    parser = argparse.ArgumentParser(
+        prog="shiv_ai_assistant",
+        description="ShivAI -- India's first offline AGI assistant. "
+                    "Interactive text REPL by default; fully offline, no API key needed.",
+    )
+    parser.add_argument(
+        "-c", "--command", action="append", default=[], metavar="CMD",
+        help="Run one command non-interactively and exit. Repeatable: -c CMD1 -c CMD2.",
+    )
+    parser.add_argument(
+        "--demo", action="store_true",
+        help="Demo mode: offline, text-only; mic/GUI/phone actions are simulated, "
+             "nothing is executed. Also enabled via SHIVAI_DEMO=1.",
+    )
+    parser.add_argument(
+        "--voice", action="store_true",
+        help="Use microphone voice input (needs the 'speech_recognition' package; "
+             "default is text input). Disabled in demo mode.",
+    )
+    args = parser.parse_args(argv)
+
+    assistant = ShivAI_AGI(demo=args.demo, voice=not args.demo)
+    assistant.use_voice = bool(args.voice and _HAS_SPEECH and not args.demo)
+    if args.voice and not assistant.use_voice:
+        print("⚠️  Voice input unavailable (needs 'speech_recognition'; disabled in demo) -- using text input.")
+
+    try:
+        assistant.run(commands=args.command or None)
+    except KeyboardInterrupt:
+        print()
+        assistant._shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
